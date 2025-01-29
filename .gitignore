@@ -1,0 +1,39 @@
+# Byte-compiled and cached files
+__pycache__/
+*.py[cod]
+*.so
+*.pyo
+
+# Virtual environment
+venv/
+env/
+*.venv
+
+# Distribution / Packaging
+build/
+dist/
+*.egg-info/
+
+# Logs and debugging
+*.log
+logs/
+debug.log
+
+# Environment variables & Secrets
+.env
+*.env
+config.json  # If you store secrets here, otherwise remove
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# MyPy and PyTest cache
+.mypy_cache/
+.pytest_cache/
+
+# VSCode settings (if using VSCode)
+.vscode/
+
+# MacOS & Windows system files
+.DS_Store
+Thumbs.db
