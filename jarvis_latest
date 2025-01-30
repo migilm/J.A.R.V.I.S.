@@ -54,7 +54,7 @@ def listen_for_command():
     """Listen for a wake word and return the command."""
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
-        print("Listening for the wake word 'hey Jarvis'...")
+        print("Standing By...")
         while True:
             try:
                 audio = recognizer.listen(source, timeout=30, phrase_time_limit=10)
@@ -63,7 +63,7 @@ def listen_for_command():
                     query = command.replace("hey jarvis", "").strip()
                     if query:
                         return query
-                    speak("Yes Mr. Stark, how can I help?")
+                    speak("Yes Mr. Stark?")
                     print("Wake word detected. Listening for your query...")
                     return listen_for_query()
             except (sr.UnknownValueError, sr.RequestError):
@@ -95,7 +95,7 @@ def main():
         print("Error: API keys are missing. Please set them in the .env file.")
         return
 
-    print("Welcome to the AI Assistant! Say 'hey Jarvis' to get started, or type 'exit' to end the session.")
+    print("\nJ.A.R.V.I.S.\n___________________________________________________________________________________________________________\n\nSay 'Hey Jarvis' to begin...\n___________________________________________________________________________________________________________\n")
     
     while True:
         query = listen_for_command()
