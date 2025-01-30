@@ -1,3 +1,7 @@
 # Environment variables & Secrets
 .env
 *.env
+
+# Development and Test Files
+jarvis_refactor
+jarvis_test
