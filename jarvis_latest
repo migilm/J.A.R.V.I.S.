@@ -85,6 +85,8 @@ def listen_for_query():
                 return f"Error with the speech recognition service: {e}"
         return "I couldn't understand your query."
 
+from datetime import datetime
+
 def main():
     """Run the AI assistant with voice interaction and weather functionality."""
     home_zip_code = "64037"  # Replace with actual home ZIP code
@@ -104,9 +106,17 @@ def main():
             speak("Goodbye!")
             break
 
-        if any(phrase in query.lower() for phrase in ["weather in", "weather at home", "weather in my location"]):
+        # Check if the query is asking for the time
+        if any(word in query.lower() for word in ["what time is it", "current time", "tell me the time"]):
+            current_time = datetime.now().strftime("%I:%M %p")  # Get time in HH:MM AM/PM format
+            response = f"The current time is {current_time}."
+        
+        # Check for weather-related queries
+        elif any(phrase in query.lower() for phrase in ["weather in", "weather at home", "weather in my location"]):
             location = home_zip_code if ("home" in query.lower() or "my location" in query.lower()) else query.split("in")[-1].strip()
             response = get_weather(location, weather_api_key)
+        
+        # Default to AI chat response
         else:
             response = chat_with_gpt(query, api_key)
 
@@ -115,3 +125,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
