@@ -4,9 +4,13 @@ import speech_recognition as sr
 import pyttsx3
 import requests
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Fetch home zip code from environment variables
+home_zip_code = os.getenv("HOME_ZIP_CODE", "90263")  # Default to 90263 if not set
 
 def chat_with_gpt(prompt, api_key, model="gpt-4"):
     """
@@ -50,6 +54,22 @@ def speak(text):
     engine.say(text)
     engine.runAndWait()
 
+def listen_for_query():
+    """Listen for the user's query."""
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        for attempt in range(2):
+            try:
+                print("Listening for your query...")
+                audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
+                return recognizer.recognize_google(audio)
+            except sr.UnknownValueError:
+                if attempt == 0:
+                    speak("I didn't catch that. What can I help with?")
+            except sr.RequestError as e:
+                return f"Error with the speech recognition service: {e}"
+        return "I couldn't understand your query."
+
 def listen_for_command():
     """Listen for a wake word and return the command."""
     recognizer = sr.Recognizer()
@@ -69,32 +89,13 @@ def listen_for_command():
             except (sr.UnknownValueError, sr.RequestError):
                 continue
 
-def listen_for_query():
-    """Listen for the user's query."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        for attempt in range(2):
-            try:
-                print("Listening for your query...")
-                audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
-                return recognizer.recognize_google(audio)
-            except sr.UnknownValueError:
-                if attempt == 0:
-                    speak("I didn't catch that. What can I help with?")
-            except sr.RequestError as e:
-                return f"Error with the speech recognition service: {e}"
-        return "I couldn't understand your query."
-
-from datetime import datetime
-
 def main():
     """Run the AI assistant with voice interaction and weather functionality."""
-    home_zip_code = "64037"  # Replace with actual home ZIP code
     api_key = os.getenv("OPENAI_API_KEY")
     weather_api_key = os.getenv("WEATHER_API_KEY")
 
-    if not api_key or not weather_api_key:
-        print("Error: API keys are missing. Please set them in the .env file.")
+    if not api_key or not weather_api_key or not home_zip_code:
+        print("Error: API keys or home zip code are missing. Please set them in the .env file.")
         return
 
     print("\nJ.A.R.V.I.S.\n___________________________________________________________________________________________________________\n\nSay 'Hey Jarvis' to begin...\n___________________________________________________________________________________________________________\n")
@@ -125,4 +126,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
