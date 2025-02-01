@@ -53,8 +53,9 @@ class VoiceAssistant:
     def print_header(self):
         """Clear the screen and print the persistent header."""
         os.system('cls' if os.name == 'nt' else 'clear')
-        print(" " * 37 + "J.A.R.V.I.S.")
-        print("-" * 85)
+        print("-" * 100)
+        print(" " * 45 + "J.A.R.V.I.S.")
+        print("-" * 100)
 
     def speak(self, text):
         """Queue text to be spoken by the TTS thread."""
