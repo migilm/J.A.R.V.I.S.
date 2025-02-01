@@ -1,128 +1,255 @@
 import openai
 import os
 import speech_recognition as sr
-import pyttsx3
+import subprocess
 import requests
+import logging
+import re
+import string
+import threading
+import queue
+import time
 from dotenv import load_dotenv
 from datetime import datetime
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Fetch home zip code from environment variables
-home_zip_code = os.getenv("HOME_ZIP_CODE", "90263")  # Default to 90263 if not set
-
-def chat_with_gpt(prompt, api_key, model="gpt-4"):
+class VoiceAssistant:
     """
-    Send a prompt to the ChatGPT API and return the response.
+    A voice assistant that uses OpenAI ChatGPT, weather data, speech recognition,
+    and text-to-speech (via macOS's 'say' command). Supports both voice and text input.
     """
-    openai.api_key = api_key
-    try:
-        response = openai.ChatCompletion.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant."},
-                {"role": "user", "content": prompt},
-            ]
+
+    def __init__(self):
+        # Load environment variables from .env file
+        load_dotenv()
+
+        # Setup logging (warnings and errors will show up)
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(asctime)s - %(levelname)s - %(message)s"
         )
-        return response["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"An error occurred: {str(e)}"
 
-def get_weather(location, weather_api_key):
-    """
-    Fetch weather information for a given location.
-    """
-    url = (f"http://api.openweathermap.org/data/2.5/weather?zip={location},us&appid={weather_api_key}&units=imperial"
-           if location.isdigit() else
-           f"http://api.openweathermap.org/data/2.5/weather?q={location}&appid={weather_api_key}&units=imperial")
-    try:
-        response = requests.get(url)
-        data = response.json()
-        if response.status_code == 200:
-            city_name = data.get("name", location)
-            weather = data["weather"][0]["description"]
-            temperature = data["main"]["temp"]
-            return f"The weather in {city_name} is {weather} with a temperature of {temperature}°F."
-        return f"Could not retrieve weather data for {location}. Please check the location name."
-    except Exception as e:
-        return f"An error occurred while fetching the weather data: {e}"
+        # Fetch API keys and home zip code from environment variables
+        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.weather_api_key = os.getenv("WEATHER_API_KEY")
+        self.home_zip_code = os.getenv("HOME_ZIP_CODE", "90263")  # Default if not set
 
-def speak(text):
-    """Convert text to speech."""
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
+        # Validate API keys
+        if not self.api_key or not self.weather_api_key:
+            logging.error(
+                "API keys are missing. Please set OPENAI_API_KEY and WEATHER_API_KEY in the .env file."
+            )
+            raise ValueError("Missing API keys.")
 
-def listen_for_query():
-    """Listen for the user's query."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        for attempt in range(2):
-            try:
-                print("Listening for your query...")
-                audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
-                return recognizer.recognize_google(audio)
-            except sr.UnknownValueError:
-                if attempt == 0:
-                    speak("I didn't catch that. What can I help with?")
-            except sr.RequestError as e:
-                return f"Error with the speech recognition service: {e}"
-        return "I couldn't understand your query."
+        # Initialize the speech recognizer and calibrate the microphone
+        self.recognizer = sr.Recognizer()
+        self.microphone = sr.Microphone()
+        with self.microphone as source:
+            self.recognizer.adjust_for_ambient_noise(source, duration=1)
 
-def listen_for_command():
-    """Listen for a wake word and return the command."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("Standing By...")
+        # Queues for commands and TTS messages
+        self.command_queue = queue.Queue()
+        self.tts_queue = queue.Queue()
+
+    def print_header(self):
+        """Clear the screen and print the persistent header."""
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print(" " * 37 + "J.A.R.V.I.S.")
+        print("-" * 85)
+
+    def speak(self, text):
+        """Queue text to be spoken by the TTS thread."""
+        self.tts_queue.put(text)
+
+    def tts_loop(self):
+        """
+        TTS thread loop that uses the macOS 'say' command.
+        The '-r' flag speeds up the voice output (300 wpm here; adjust as needed).
+        """
         while True:
+            text = self.tts_queue.get()
             try:
-                audio = recognizer.listen(source, timeout=30, phrase_time_limit=10)
-                command = recognizer.recognize_google(audio).lower()
+                subprocess.call(["say", "-r", "190", text])
+            except Exception as e:
+                logging.error(f"TTS error: {e}")
+
+    def listen_for_query(self):
+        """
+        Listen for a user's query (up to 3 attempts) and return the recognized text.
+        Re-adjusts ambient noise before listening.
+        """
+        for attempt in range(3):
+            try:
+                logging.debug("Listening for query...")
+                with sr.Microphone() as source:
+                    # Re-calibrate the microphone to current ambient noise
+                    self.recognizer.adjust_for_ambient_noise(source, duration=1)
+                    audio = self.recognizer.listen(source, timeout=15, phrase_time_limit=15)
+                query = self.recognizer.recognize_google(audio)
+                logging.debug(f"Query recognized: {query}")
+                return query
+            except sr.UnknownValueError:
+                self.speak("I didn't catch that. Please repeat your query.")
+                logging.debug("Query not recognized.")
+            except sr.RequestError as e:
+                error_msg = f"Speech recognition service error: {e}"
+                logging.error(error_msg)
+                self.speak(error_msg)
+                return None
+
+        logging.error("Failed to understand query after multiple attempts.")
+        self.speak("I couldn't understand your query. Please try again later.")
+        return None
+
+    def listen_for_command(self):
+        """
+        Listen for the wake word ("hey jarvis") and extract the subsequent command.
+        If there's no immediate query after the wake word, prompt for further input.
+        """
+        logging.debug("Waiting for wake word 'hey jarvis'...")
+        with self.microphone as source:
+            while True:
+                try:
+                    audio = self.recognizer.listen(source, timeout=30, phrase_time_limit=10)
+                except sr.WaitTimeoutError:
+                    continue  # No speech detected; keep waiting.
+                try:
+                    command = self.recognizer.recognize_google(audio).lower()
+                except sr.UnknownValueError:
+                    logging.debug("No command recognized.")
+                    continue
+                except sr.RequestError as e:
+                    logging.warning(f"Command recognition error: {e}")
+                    continue
+
+                logging.debug(f"Command recognized: {command}")
                 if "hey jarvis" in command:
-                    query = command.replace("hey jarvis", "").strip()
+                    # Strip the wake word and any extra punctuation/spaces
+                    query = command.split("hey jarvis", 1)[1].strip()
+                    query = query.lstrip(string.punctuation + " ")
                     if query:
+                        logging.debug(f"Immediate query: {query}")
                         return query
-                    speak("Yes Mr. Stark?")
-                    print("Wake word detected. Listening for your query...")
-                    return listen_for_query()
-            except (sr.UnknownValueError, sr.RequestError):
-                continue
+                    # No immediate query detected; prompt and wait a bit longer
+                    self.speak("Yes, how can I help you?")
+                    time.sleep(2)  # Increased delay to allow you to start speaking
+                    return self.listen_for_query()
 
-def main():
-    """Run the AI assistant with voice interaction and weather functionality."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    weather_api_key = os.getenv("WEATHER_API_KEY")
+    def voice_input_thread(self):
+        """Continuously listen for voice commands and add them to the command queue."""
+        while True:
+            query = self.listen_for_command()
+            if query:
+                self.command_queue.put(query)
 
-    if not api_key or not weather_api_key or not home_zip_code:
-        print("Error: API keys or home zip code are missing. Please set them in the .env file.")
-        return
+    def text_input_thread(self):
+        """Continuously prompt for text commands and add them to the command queue."""
+        while True:
+            query = input("Type your command: ").strip()
+            if query:
+                self.command_queue.put(query)
 
-    print("\nJ.A.R.V.I.S.\n___________________________________________________________________________________________________________\n\nSay 'Hey Jarvis' to begin...\n___________________________________________________________________________________________________________\n")
-    
-    while True:
-        query = listen_for_command()
-        if query.lower() in ["exit", "quit"]:
-            print("Goodbye!")
-            speak("Goodbye!")
-            break
+    def chat_with_gpt(self, prompt, model="gpt-4"):
+        """Send a prompt to ChatGPT and return the response."""
+        openai.api_key = self.api_key
+        try:
+            response = openai.ChatCompletion.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return response["choices"][0]["message"]["content"]
+        except Exception as e:
+            error_msg = f"Error: {e}"
+            logging.error(error_msg)
+            return error_msg
 
-        # Check if the query is asking for the time
-        if any(word in query.lower() for word in ["what time is it", "current time", "tell me the time"]):
-            current_time = datetime.now().strftime("%I:%M %p")  # Get time in HH:MM AM/PM format
-            response = f"The current time is {current_time}."
-        
-        # Check for weather-related queries
-        elif any(phrase in query.lower() for phrase in ["weather in", "weather at home", "weather in my location"]):
-            location = home_zip_code if ("home" in query.lower() or "my location" in query.lower()) else query.split("in")[-1].strip()
-            response = get_weather(location, weather_api_key)
-        
-        # Default to AI chat response
+    def get_weather(self, location):
+        """Fetch weather information for a given location."""
+        if not location or location.lower() in ["home", "my location"]:
+            location = self.home_zip_code
+
+        if location.isdigit():
+            url = (
+                f"http://api.openweathermap.org/data/2.5/weather?"
+                f"zip={location},us&appid={self.weather_api_key}&units=imperial"
+            )
         else:
-            response = chat_with_gpt(query, api_key)
+            url = (
+                f"http://api.openweathermap.org/data/2.5/weather?"
+                f"q={location}&appid={self.weather_api_key}&units=imperial"
+            )
 
-        print(f"Assistant: {response}\n")
-        speak(response)
+        try:
+            response = requests.get(url)
+            data = response.json()
+            if response.status_code == 200:
+                city = data.get("name", location)
+                weather = data["weather"][0]["description"]
+                temp = data["main"]["temp"]
+                return f"The weather in {city} is {weather} with a temperature of {temp}°F."
+            error_msg = f"Could not retrieve weather data for {location}."
+            logging.error(error_msg)
+            return error_msg
+        except Exception as e:
+            error_msg = f"Weather API error: {e}"
+            logging.error(error_msg)
+            return error_msg
+
+    def parse_weather_query(self, query):
+        """
+        Extract a location from the query if it mentions 'weather in ...'.
+        Returns the location or the default home zip code.
+        """
+        match = re.search(r'weather in ([\w\s]+)', query, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        if "home" in query.lower() or "my location" in query.lower():
+            return self.home_zip_code
+        return None
+
+    def process_command(self, command):
+        """Determine the command type and generate an appropriate response."""
+        if any(phrase in command.lower() for phrase in ["what time is it", "current time", "tell me the time"]):
+            current_time = datetime.now().strftime("%I:%M %p")
+            return f"The current time is {current_time}."
+        elif "weather" in command.lower():
+            location = self.parse_weather_query(command) or self.home_zip_code
+            return self.get_weather(location)
+        else:
+            return self.chat_with_gpt(command)
+
+    def run(self):
+        """Start all threads and process commands from the shared queue."""
+        # Start TTS thread
+        threading.Thread(target=self.tts_loop, daemon=True).start()
+
+        # Start voice and text input threads
+        threading.Thread(target=self.voice_input_thread, daemon=True).start()
+        threading.Thread(target=self.text_input_thread, daemon=True).start()
+
+        # Print persistent header at startup
+        self.print_header()
+
+        self.speak("Hello, I'm JARVIS. Say 'Hey Jarvis' or type your command.")
+
+        while True:
+            command = self.command_queue.get()
+            if command.lower() in ["exit", "quit"]:
+                self.speak("Goodbye!")
+                break
+
+            response = self.process_command(command)
+            # Clear screen and reprint header before showing the response
+            self.print_header()
+            print(f"\nAssistant: {response}\n")
+            self.speak(response)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        assistant = VoiceAssistant()
+        assistant.run()
+    except Exception as e:
+        logging.critical(f"Assistant terminated due to error: {e}")
