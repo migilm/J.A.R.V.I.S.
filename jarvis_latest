@@ -9,6 +9,7 @@ import string
 import threading
 import queue
 import time
+import urllib.parse  # For URL encoding search queries
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -50,6 +51,16 @@ class VoiceAssistant:
         self.command_queue = queue.Queue()
         self.tts_queue = queue.Queue()
 
+        # Define available capabilities (manually update as you add functions)
+        self.capabilities = {
+            "ChatGPT Query": "Respond to general queries using ChatGPT-4.",
+            "Weather": "Provide real-time weather conditions (try saying 'weather in [location]').",
+            "Time": "Tell you the current time.",
+            "Safari": "Open Safari to search the web or navigate to a specific website (e.g., 'bring up Google').",
+            "Apps": "Open any installed application on your Mac by name (e.g., 'open mail', 'open calendar', 'open vs code').",
+            "Future": "Take over the world..."
+        }
+
     def print_header(self):
         """Clear the screen and print the persistent header."""
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -64,7 +75,7 @@ class VoiceAssistant:
     def tts_loop(self):
         """
         TTS thread loop that uses the macOS 'say' command.
-        The '-r' flag speeds up the voice output (300 wpm here; adjust as needed).
+        The '-r' flag speeds up the voice output (190 wpm here; adjust as needed).
         """
         while True:
             text = self.tts_queue.get()
@@ -210,14 +221,102 @@ class VoiceAssistant:
             return self.home_zip_code
         return None
 
+    def list_capabilities(self):
+        """Return a formatted string listing Jarvis's capabilities."""
+        capabilities_info = "\n".join(f"- {name}: {desc}" for name, desc in self.capabilities.items())
+        response = f"Here are my available functions:\n{capabilities_info}"
+        return response
+
+    def open_in_safari(self, query):
+        """
+        Open Safari on macOS with either a direct URL (if a known website is mentioned)
+        or perform a Google search using the query.
+        """
+        # Mapping of known website keywords to their URLs
+        sites = {
+            "google": "https://www.google.com",
+            "youtube": "https://www.youtube.com",
+            "facebook": "https://www.facebook.com",
+            "twitter": "https://www.twitter.com",
+            "reddit": "https://www.reddit.com"
+        }
+
+        lower_query = query.lower()
+        url = None
+
+        # Check if the query contains any known site keywords.
+        for site_name, site_url in sites.items():
+            if site_name in lower_query:
+                url = site_url
+                break
+
+        if not url:
+            # If no specific site is mentioned, treat the entire query as a search query.
+            # Remove phrases like "search for" or "open safari" if present.
+            search_query = re.sub(r"^(search for|open safari|bring up|go to)\s+", "", lower_query)
+            encoded_query = urllib.parse.quote(search_query)
+            url = f"https://www.google.com/search?q={encoded_query}"
+
+        try:
+            subprocess.call(["open", "-a", "Safari", url])
+            return f"Opening Safari with {site_name}"
+        except Exception as e:
+            logging.error(f"Error opening Safari: {e}")
+            return "Sorry, I couldn't open Safari."
+
+    def open_app(self, command):
+        """
+        Open any installed application on macOS based on the app name given in the command.
+        For example, "open mail" or "open calendar" will open the corresponding app.
+        """
+        # Remove the "open " prefix and strip extra spaces.
+        app_query = command[5:].strip()
+        # Define common aliases to the official application names.
+        app_aliases = {
+            "mail": "Mail",
+            "calendar": "Calendar",
+            "vs code": "Visual Studio Code",
+            "vscode": "Visual Studio Code",
+            "code": "Visual Studio Code",
+            "terminal": "Terminal",
+            "notes": "Notes",
+            "chrome": "Google Chrome",
+            "finder": "Finder",
+            "slack": "Slack",
+            "spotify": "Spotify"
+        }
+        lower_app_query = app_query.lower()
+        app_name = app_aliases.get(lower_app_query, app_query.title())
+        try:
+            subprocess.call(["open", "-a", app_name])
+            return f"Opening {app_name}"
+        except Exception as e:
+            logging.error(f"Error opening {app_name}: {e}")
+            return f"Sorry, I couldn't open {app_name}."
+
     def process_command(self, command):
         """Determine the command type and generate an appropriate response."""
-        if any(phrase in command.lower() for phrase in ["what time is it", "current time", "tell me the time"]):
+        lower_cmd = command.lower()
+
+        # Check for capabilities command.
+        if any(phrase in lower_cmd for phrase in ["what can you do", "what are your capabilities", "list your functions", "help", "capabilities"]):
+            return self.list_capabilities()
+        elif any(phrase in lower_cmd for phrase in ["what time is it", "current time", "tell me the time"]):
             current_time = datetime.now().strftime("%I:%M %p")
             return f"The current time is {current_time}."
-        elif "weather" in command.lower():
+        elif "weather" in lower_cmd:
             location = self.parse_weather_query(command) or self.home_zip_code
             return self.get_weather(location)
+        # Check for Safari-related commands.
+        elif lower_cmd.startswith("search for"):
+            # e.g., "search for best tacos near me"
+            search_term = command[len("search for"):].strip()
+            return self.open_in_safari(search_term)
+        elif any(phrase in lower_cmd for phrase in ["open safari", "bring up", "go to"]):
+            return self.open_in_safari(command)
+        # Check for generic app-opening commands.
+        elif lower_cmd.startswith("open ") and not lower_cmd.startswith("open safari"):
+            return self.open_app(command)
         else:
             return self.chat_with_gpt(command)
 
