@@ -61,12 +61,32 @@ class VoiceAssistant:
             "Future": "Take over the world..."
         }
 
+        # Set the default status to "Listening for Hey Jarvis!"
+        self.status = "Listening for Hey Jarvis!"
+
+    def update_status(self, new_status):
+        """Update the status and reprint the header to reflect the change."""
+        self.status = new_status
+        self.print_header()
+
     def print_header(self):
-        """Clear the screen and print the persistent header."""
+        """Clear the screen and print the persistent header with colored elements."""
         os.system('cls' if os.name == 'nt' else 'clear')
-        print("-" * 100)
-        print(" " * 45 + "J.A.R.V.I.S.")
-        print("-" * 100)
+        # Print dash lines in red using ANSI code \033[31m for red
+        print("\033[31m" + "-" * 100 + "\033[0m")
+        # Print 'J.A.R.V.I.S.' in blue (\033[34m) centered with some spaces
+        print(" " * 45 + "\033[34mJ.A.R.V.I.S.\033[0m")
+        print("\033[31m" + "-" * 100 + "\033[0m")
+  
+        # Build the status line:
+        # The label "Status:" in grey (\033[90m) and the status message in dull yellow (\033[33m)
+        status_label = "\033[90mStatus:\033[0m"
+        status_message = "\033[33m" + self.status.upper() + "\033[0m"
+        full_status = f"{status_label} {status_message}"
+        # Center the combined status string with a rightward offset (5 spaces)
+        centered_status = (" " * 5) + full_status.center(110)
+        print(centered_status)
+        print("\033[31m" + "-" * 100 + "\033[0m")
 
     def speak(self, text):
         """Queue text to be spoken by the TTS thread."""
@@ -85,43 +105,37 @@ class VoiceAssistant:
                 logging.error(f"TTS error: {e}")
 
     def listen_for_query(self):
-        """
-        Listen for a user's query (up to 3 attempts) and return the recognized text.
-        Re-adjusts ambient noise before listening.
-        """
-        for attempt in range(3):
+        self.update_status("Listening")
+        logging.debug("Listening for query...")
+        with self.microphone as source:
+            # Re-calibrate the microphone for the current ambient noise
+            self.recognizer.adjust_for_ambient_noise(source, duration=1)
             try:
-                logging.debug("Listening for query...")
-                with sr.Microphone() as source:
-                    # Re-calibrate the microphone to current ambient noise
-                    self.recognizer.adjust_for_ambient_noise(source, duration=1)
-                    audio = self.recognizer.listen(source, timeout=15, phrase_time_limit=15)
+                # Listen for the user's query once
+                audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=15)
                 query = self.recognizer.recognize_google(audio)
                 logging.debug(f"Query recognized: {query}")
                 return query
             except sr.UnknownValueError:
-                self.speak("I didn't catch that. Please repeat your query.")
-                logging.debug("Query not recognized.")
+                logging.debug("No query recognized.")
+                return None
             except sr.RequestError as e:
                 error_msg = f"Speech recognition service error: {e}"
                 logging.error(error_msg)
                 self.speak(error_msg)
                 return None
 
-        logging.error("Failed to understand query after multiple attempts.")
-        self.speak("I couldn't understand your query. Please try again later.")
-        return None
-
     def listen_for_command(self):
         """
         Listen for the wake word ("hey jarvis") and extract the subsequent command.
-        If there's no immediate query after the wake word, prompt for further input.
+        If there's no immediate query after the wake word, exit the current microphone context and call listen_for_query().
         """
+        self.update_status("Listening")
         logging.debug("Waiting for wake word 'hey jarvis'...")
         with self.microphone as source:
             while True:
                 try:
-                    audio = self.recognizer.listen(source, timeout=30, phrase_time_limit=10)
+                    audio = self.recognizer.listen(source, timeout=15, phrase_time_limit=15)
                 except sr.WaitTimeoutError:
                     continue  # No speech detected; keep waiting.
                 try:
@@ -141,10 +155,12 @@ class VoiceAssistant:
                     if query:
                         logging.debug(f"Immediate query: {query}")
                         return query
-                    # No immediate query detected; prompt and wait a bit longer
-                    self.speak("Yes, how can I help you?")
-                    time.sleep(2)  # Increased delay to allow you to start speaking
-                    return self.listen_for_query()
+                    # No immediate query detected; exit the with block
+                    break
+        # Outside the with block now, call listen_for_query in a new context
+        self.speak("Yes, how can I help you?")
+        time.sleep(2)  # Allow time for the user to begin speaking
+        return self.listen_for_query()
 
     def voice_input_thread(self):
         """Continuously listen for voice commands and add them to the command queue."""
@@ -232,7 +248,6 @@ class VoiceAssistant:
         Open Safari on macOS with either a direct URL (if a known website is mentioned)
         or perform a Google search using the query.
         """
-        # Mapping of known website keywords to their URLs
         sites = {
             "google": "https://www.google.com",
             "youtube": "https://www.youtube.com",
@@ -243,23 +258,25 @@ class VoiceAssistant:
 
         lower_query = query.lower()
         url = None
+        site_name_found = None
 
-        # Check if the query contains any known site keywords.
         for site_name, site_url in sites.items():
             if site_name in lower_query:
                 url = site_url
+                site_name_found = site_name
                 break
 
         if not url:
-            # If no specific site is mentioned, treat the entire query as a search query.
-            # Remove phrases like "search for" or "open safari" if present.
             search_query = re.sub(r"^(search for|open safari|bring up|go to)\s+", "", lower_query)
             encoded_query = urllib.parse.quote(search_query)
             url = f"https://www.google.com/search?q={encoded_query}"
 
         try:
             subprocess.call(["open", "-a", "Safari", url])
-            return f"Opening Safari with {site_name}"
+            if site_name_found:
+                return f"Opening Safari with {site_name_found}"
+            else:
+                return "Opening Safari"
         except Exception as e:
             logging.error(f"Error opening Safari: {e}")
             return "Sorry, I couldn't open Safari."
@@ -269,9 +286,7 @@ class VoiceAssistant:
         Open any installed application on macOS based on the app name given in the command.
         For example, "open mail" or "open calendar" will open the corresponding app.
         """
-        # Remove the "open " prefix and strip extra spaces.
         app_query = command[5:].strip()
-        # Define common aliases to the official application names.
         app_aliases = {
             "mail": "Mail",
             "calendar": "Calendar",
@@ -298,7 +313,6 @@ class VoiceAssistant:
         """Determine the command type and generate an appropriate response."""
         lower_cmd = command.lower()
 
-        # Check for capabilities command.
         if any(phrase in lower_cmd for phrase in ["what can you do", "what are your capabilities", "list your functions", "help", "capabilities"]):
             return self.list_capabilities()
         elif any(phrase in lower_cmd for phrase in ["what time is it", "current time", "tell me the time"]):
@@ -307,14 +321,11 @@ class VoiceAssistant:
         elif "weather" in lower_cmd:
             location = self.parse_weather_query(command) or self.home_zip_code
             return self.get_weather(location)
-        # Check for Safari-related commands.
         elif lower_cmd.startswith("search for"):
-            # e.g., "search for best tacos near me"
             search_term = command[len("search for"):].strip()
             return self.open_in_safari(search_term)
         elif any(phrase in lower_cmd for phrase in ["open safari", "bring up", "go to"]):
             return self.open_in_safari(command)
-        # Check for generic app-opening commands.
         elif lower_cmd.startswith("open ") and not lower_cmd.startswith("open safari"):
             return self.open_app(command)
         else:
@@ -322,16 +333,11 @@ class VoiceAssistant:
 
     def run(self):
         """Start all threads and process commands from the shared queue."""
-        # Start TTS thread
         threading.Thread(target=self.tts_loop, daemon=True).start()
-
-        # Start voice and text input threads
         threading.Thread(target=self.voice_input_thread, daemon=True).start()
         threading.Thread(target=self.text_input_thread, daemon=True).start()
 
-        # Print persistent header at startup
         self.print_header()
-
         self.speak("Hello, I'm JARVIS. Say 'Hey Jarvis' or type your command.")
 
         while True:
@@ -340,12 +346,22 @@ class VoiceAssistant:
                 self.speak("Goodbye!")
                 break
 
+            self.update_status("Processing")
             response = self.process_command(command)
-            # Clear screen and reprint header before showing the response
+            self.update_status("Responding")
             self.print_header()
             print(f"\nAssistant: {response}\n")
             self.speak(response)
-
+            
+            # Linger on the response for up to 60 seconds or until a new command arrives
+            linger_time = 10  # seconds
+            start_time = time.time()
+            while time.time() - start_time < linger_time:
+                if not self.command_queue.empty():
+                    break
+                time.sleep(1)
+                
+            self.update_status("Listening for Hey Jarvis!")
 
 if __name__ == "__main__":
     try:
